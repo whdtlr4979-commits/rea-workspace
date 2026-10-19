@@ -10,7 +10,10 @@
 
 REA는 바이너리·패키지·Electron/JS 앱·웹사이트 등 소스가 없는 대상을 분석할 때만 사용합니다. 이 저장소 자체의 소스 분석에는 일반 도구를 사용합니다.
 
-네이티브 바이너리 분석은 Hopper, Ghidra, IDA 중 하나가 필요하며, 정적 JavaScript/Electron 분석은 추가 엔진 없이 동작합니다. 준비 상태 확인: `npx -y rea-agents@6.7.0 doctor --client claude_code --json`
+정적 JavaScript/Electron 분석은 추가 엔진 없이 동작합니다. 네이티브 바이너리 분석은 Ghidra를 사용합니다.
+
+- `scripts/install-ghidra.sh` — Ghidra 12.1.4를 `/opt`에 설치하고 `ghidraRun`을 PATH에 연결 (REA는 Ghidra 12.1.x만 지원, JDK 21 필요). 클라우드 환경의 setup script에서 실행됩니다.
+- 준비 상태 확인: `npx -y rea-agents@6.7.0 doctor --provider ghidra --json`
 
 ### 버전 업데이트
 
