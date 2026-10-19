@@ -1,6 +1,6 @@
 import { resolutionToSeconds, type PlotRow, type Resolution, type UTCTimestamp } from '../core/types';
 import { decodeFrame, encodeFrame, heartbeat, isHeartbeat } from '../protocol/framing';
-import { toWireRows, type ClientRequests, type StudyInputs, type SymbolInfo, type WireMessage } from '../protocol/messages';
+import { toWireRows, type ClientRequests, type PointsetPoint, type StudyInputs, type SymbolInfo, type WireMessage } from '../protocol/messages';
 import { baseTicker, decodeSymbol } from '../protocol/symbol';
 import { findSymbol, heikinAshi, MockFeed, type Bar } from './feed';
 import { calculatorForName, type StudyCalculator } from './studies';
@@ -106,6 +106,24 @@ export class MockDataServer {
   }
 }
 
+/** Array position of the bar containing `time`, extrapolated past either end of the feed. */
+function locateBar(series: SeriesState, time: UTCTimestamp): number {
+  const { bars } = series.feed;
+  const step = resolutionToSeconds(series.resolution);
+  const first = bars[0];
+  const last = bars[bars.length - 1];
+  if (time < first.time) return -Math.ceil((first.time - time) / step);
+  if (time >= last.time) return bars.length - 1 + Math.floor((time - last.time) / step);
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (bars[mid].time <= time) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 class ServerConnection {
   private readonly sessions = new Map<string, ChartSessionState>();
   private readonly timers: ReturnType<typeof setInterval>[] = [];
@@ -198,6 +216,13 @@ class ServerConnection {
         this.recalculateStudy(cs, study);
         return;
       }
+      case 'create_pointset': {
+        const [cs, pointsetId, turnaround, symbolId, resolution, ...points] = params as ClientRequests['create_pointset'];
+        this.createPointset(cs, pointsetId, turnaround, symbolId, resolution, points);
+        return;
+      }
+      case 'remove_pointset':
+        return;
       case 'remove_study': {
         const [cs, studyId] = params as ClientRequests['remove_study'];
         const session = this.session(cs);
@@ -279,6 +304,24 @@ class ServerConnection {
     for (const study of session.studies.values()) {
       if (study.parentId === seriesId) this.recalculateStudy(cs, study);
     }
+  }
+
+  /**
+   * Resolves drawing anchors to bar indices on the current series (spec §9.2). Points recorded
+   * on another interval are placed by time; times outside the history are extrapolated.
+   */
+  private createPointset(cs: string, pointsetId: string, turnaround: string, symbolId: string, resolution: Resolution, points: PointsetPoint[]): void {
+    const session = this.session(cs);
+    const series = session ? [...session.series.values()].find((s) => s.symbolId === symbolId && s.resolution === resolution) : undefined;
+    if (!series) {
+      this.emit('pointset_error', [cs, pointsetId, turnaround, 'no matching series']);
+      return;
+    }
+    const plots = points.map(([time, offset, interval], k) => {
+      const position = interval === resolution ? locateBar(series, time) + offset : locateBar(series, time + offset * resolutionToSeconds(interval));
+      return { index: k, value: [position - series.anchor, time] };
+    });
+    this.emit('du', [cs, { [pointsetId]: { plots, t: turnaround } }]);
   }
 
   private createStudy(cs: string, studyId: string, turnaround: string, parentId: string, studyName: string, inputs: StudyInputs): void {

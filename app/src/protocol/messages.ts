@@ -47,6 +47,9 @@ export interface StudyInputValue {
 
 export type StudyInputs = Record<string, StudyInputValue>;
 
+/** One drawing anchor sent to `create_pointset` (spec §9.2): `[time_t, offset, interval]`. */
+export type PointsetPoint = [time: number, offset: number, interval: Resolution];
+
 /** Client → server requests (spec §6.3). Tuples mirror the parameter order on the wire. */
 export interface ClientRequests {
   chart_create_session: [session: string, flags: string];
@@ -79,6 +82,8 @@ export interface ClientRequests {
   ];
   modify_study: [session: string, studyId: string, turnaround: string, inputs: StudyInputs];
   remove_study: [session: string, studyId: string];
+  create_pointset: [session: string, pointsetId: string, turnaround: string, symbolId: string, resolution: Resolution, ...points: PointsetPoint[]];
+  remove_pointset: [session: string, pointsetId: string];
 }
 
 export type ClientMethod = keyof ClientRequests;

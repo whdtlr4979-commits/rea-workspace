@@ -1,6 +1,6 @@
 import type { PlotRow, Resolution } from '../core/types';
 import { decodeFrame, encodeFrame, isHeartbeat } from '../protocol/framing';
-import { fromWireRows, type ClientMethod, type ClientRequests, type StudyInputs, type SymbolInfo, type TimescaleChangeset, type WireMessage, type WirePlotRow } from '../protocol/messages';
+import { fromWireRows, type ClientMethod, type ClientRequests, type PointsetPoint, type StudyInputs, type SymbolInfo, type TimescaleChangeset, type WireMessage, type WirePlotRow } from '../protocol/messages';
 import { encodeSymbol, type ExtendedSymbol } from '../protocol/symbol';
 import type { FrameConnection } from '../server/mockServer';
 
@@ -124,6 +124,15 @@ export class ChartSession {
     this.api.send('remove_study', [this.id, studyId]);
   }
 
+  /** Pointset replies arrive as one `du` whose rows map request order to `[barIndex, time]`. */
+  createPointset(pointsetId: string, symbolId: string, resolution: Resolution, points: PointsetPoint[], handler: SourceHandler): void {
+    this.sourceHandlers.set(pointsetId, (event) => {
+      handler(event);
+      if (event.kind === 'data' || event.kind === 'error') this.sourceHandlers.delete(pointsetId);
+    });
+    this.api.send('create_pointset', [this.id, pointsetId, 'turnaround', symbolId, resolution, ...points]);
+  }
+
   delete(): void {
     this.api.send('chart_delete_session', [this.id]);
     this.api.forget(this.id);
@@ -140,10 +149,10 @@ export class ChartSession {
         return;
       case 'timescale_update':
       case 'du': {
-        const objects = params[0] as Record<string, { s?: WirePlotRow[]; st?: WirePlotRow[]; t: string }>;
+        const objects = params[0] as Record<string, { s?: WirePlotRow[]; st?: WirePlotRow[]; plots?: PlotRow[]; t: string }>;
         const changeset = method === 'timescale_update' ? (params[1] as TimescaleChangeset) : undefined;
         for (const [objectId, payload] of Object.entries(objects)) {
-          const rows = fromWireRows(payload.s ?? payload.st ?? []);
+          const rows = payload.plots ?? fromWireRows(payload.s ?? payload.st ?? []);
           this.sourceHandlers.get(objectId)?.({ kind: 'data', turnaround: payload.t, rows, changeset });
         }
         return;
@@ -162,6 +171,7 @@ export class ChartSession {
         return;
       case 'series_error':
       case 'study_error':
+      case 'pointset_error':
         this.sourceHandlers.get(params[0] as string)?.({ kind: 'error', turnaround: params[1] as string, message: String(params[2]) });
         return;
       case 'study_deleted': {

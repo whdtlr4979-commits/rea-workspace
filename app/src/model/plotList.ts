@@ -110,6 +110,20 @@ export class PlotList {
     return this.rows[Math.max(0, pos - 1)];
   }
 
+  /** Row whose time (column 0) equals `time`. Rows are time-ordered as well as index-ordered. */
+  findByTime(time: number): PlotRow | null {
+    let lo = 0;
+    let hi = this.rows.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const t = this.rows[mid].value[0];
+      if (t === time) return this.rows[mid];
+      if (t < time) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return null;
+  }
+
   /** Rows with `from <= index <= to`. */
   range(from: BarIndex, to: BarIndex): PlotRow[] {
     return this.rows.slice(this.lowerBound(from), this.lowerBound(Math.floor(to) + 1));

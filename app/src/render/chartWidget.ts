@@ -27,7 +27,7 @@ export class ChartWidget {
   private frame = 0;
   private timeMarkXs: number[] = [];
   private axisWidth = THEME.minPriceAxisWidth;
-  private drag: { kind: 'pane' | 'price' | 'time'; pane?: Pane; lastY: number } | null = null;
+  private drag: { kind: 'pane' | 'price' | 'time' | 'drawing'; pane?: Pane; lastY: number } | null = null;
 
   constructor(
     container: HTMLElement,
@@ -131,6 +131,10 @@ export class ChartWidget {
     }
   }
 
+  private updateCursor(element: HTMLElement, x: number, y: number): void {
+    element.style.cursor = this.model.drawings.cursorAt(x, y);
+  }
+
   private localPoint(event: PointerEvent | WheelEvent | MouseEvent, element: HTMLElement): { x: number; y: number } {
     const rect = element.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -138,10 +142,18 @@ export class ChartWidget {
 
   private bindPane(widget: PaneWidget): void {
     const { element, axisElement, pane } = widget;
+    const { drawings } = this.model;
     element.addEventListener('pointerdown', (e) => {
       if ((e.target as HTMLElement).closest('.legend')) return;
+      if (e.button !== 0) return;
       const p = this.localPoint(e, element);
       element.setPointerCapture(e.pointerId);
+      // Drawings only live in the main pane; they get the first chance at the press.
+      if (pane.isMain && drawings.pointerDown(p.x, p.y)) {
+        this.drag = { kind: 'drawing', pane, lastY: p.y };
+        this.updateCursor(element, p.x, p.y);
+        return;
+      }
       this.drag = { kind: 'pane', pane, lastY: p.y };
       this.model.startScroll(p.x);
     });
@@ -151,11 +163,19 @@ export class ChartWidget {
         this.model.scrollTo(p.x);
         pane.priceScale.scrollBy(p.y - this.drag.lastY);
         this.drag.lastY = p.y;
+      } else if (pane.isMain) {
+        drawings.pointerMove(p.x, p.y);
       }
+      if (pane.isMain) this.updateCursor(element, p.x, p.y);
       this.model.setCrosshair(p.x, p.y, pane);
     });
-    const endDrag = () => {
+    const endDrag = (e: PointerEvent) => {
       if (this.drag?.kind === 'pane') this.model.endScroll();
+      if (pane.isMain) {
+        const p = this.localPoint(e, element);
+        drawings.pointerUp(p.x, p.y);
+        this.updateCursor(element, p.x, p.y);
+      }
       this.drag = null;
     };
     element.addEventListener('pointerup', endDrag);

@@ -1,6 +1,7 @@
 import { InvalidationLevel, SeriesPlotIndex } from '../core/types';
 import type { ChartModel, Pane } from '../model/chartModel';
 import { CanvasBinding } from './canvas';
+import { drawDrawingsMain, drawDrawingsTop } from './drawings';
 import { drawAxisLabel, drawGrid, drawHorizontalDashed, drawSeries, drawStudy, drawVerticalDashed } from './renderers';
 import { THEME } from './theme';
 
@@ -79,6 +80,7 @@ export class PaneWidget {
     for (const study of this.pane.studies) {
       if (!this.pane.overlayScales.has(study.id)) drawStudy(this.main, study, study.data.range(from - 1, to + 1), timeScale, ps);
     }
+    if (this.pane.isMain) drawDrawingsMain(this.main, this.model.drawings);
   }
 
   private paintAxis(): void {
@@ -134,6 +136,8 @@ export class PaneWidget {
   private paintTop(): void {
     this.top.begin();
     const axis = this.axisTop.begin();
+    const { drawings } = this.model;
+    if (this.pane.isMain) drawDrawingsTop(this.top, drawings, drawings.creatingTool());
     const { crosshair } = this.model;
     if (!crosshair.visible) return;
     drawVerticalDashed(this.top, crosshair.x, THEME.crosshair, CROSSHAIR_DASH);
