@@ -14,6 +14,7 @@
 
 - 정적 분석 범위: 차트 페이지 HTML이 참조하는 초기 번들 56개 + 인라인 스크립트 + 차트 관련 지연 로드 청크 52개 (총 109개 파일, 약 6.2MB). REA `analyze_javascript_application`으로 모듈 그래프(4,526개 모듈)를 만들고, 나머지는 직접 읽었다. `14041.*.js`는 분석기 힙 한도로 의미 분석이 빠졌다.
 - 런타임 관찰 범위: 익명 사용자로 차트 로드, 하단 `5D` 버튼으로 타임프레임 변경, 지표 대화상자 열기와 검색. 지표 추가는 익명 사용자에게 가입 유도 모달(regwall)이 떠서 막혔다(→ §8.6).
+- 로그인 세션 HAR(Chrome sanitized 내보내기, 2026-10-19 13:32 UTC): 저장된 레이아웃 `/chart/<id>/`을 다시 연 시점부터 약 2분 구간이다. WebSocket 메시지 351개와 HTTP 요청 782개가 들어 있다. 이 구간에서 레이아웃 불러오기, 드로잉 불러오기, pointset, 장중 실시간 틱을 확인했다(아래 **[관찰-HAR]**). HAR 원본에는 인증 토큰이 남아 있어 저장소에 넣지 않았다.
 - 모듈 이름은 번들 안의 로거 이름(`getLogger("Chart.TimeScale")` 등)과 webpack 청크 이름을 기준으로 적었다. 숫자 청크 해시는 배포마다 바뀐다.
 
 ---
@@ -333,11 +334,13 @@ ChartWidgetCollection            레이아웃(s, 2h, …)과 차트 간 동기�
 | 하트비트 | 서버가 `~h~<n>`을 보내면 클라이언트가 같은 값으로 즉시 응답한다. 20초 동안 아무 데이터가 없으면 타임아웃(코드 4000, "socket.io timeout")으로 끊는다 [정적][관찰] |
 | 재연결 | 끊긴 뒤 5초 후 재시도, 오프라인이면 `online` 이벤트를 기다린다. 최대 재연결·리다이렉트 각 20회. 연결 전 전송 요청은 큐에 쌓았다가 연결 후 보낸다 [정적] |
 | 메시지 형식 | 요청과 응답 모두 `{"m": method, "p": [params…]}` (응답에 `t` 시간 필드가 붙을 수 있음) [정적][관찰] |
-| 핑 | `WS_HOST_PING_REQUIRED`이면 `https://<host>/ping`을 최대 10회 호출해 RTT(min/max/avg)를 잰다 [정적] |
+| 핑 | `WS_HOST_PING_REQUIRED`이면 `https://<host>/ping`을 최대 10회 호출해 RTT(min/max/avg)를 잰다 [정적]. 로그인 세션에서 `GET https://data.tradingview.com/ping`이 약 10초 간격으로 10회 호출됐다 [관찰-HAR] |
+| 인증 | 익명은 `set_auth_token ["unauthorized_user_token"]` [관찰]. 로그인 사용자는 RS512 서명 JWT를 보내며, 유효 기간은 발급 후 4시간이다. 클레임: `user_id`, `plan`, `prostatus`, `perm`, `study_perm`, `fields_permissions`, `ext_hours`, `max_studies`, `max_charts`, `max_connections`, `max_fundamentals`, `max_study_on_study`, `max_active_alerts` 등 알림 한도 4종, `max_overall_alerts`, `max_alert_conditions`, `watchlist_symbols_limit`, `multiple_watchlists`, `multiflagged_symbols_lists`, `iat`, `exp` [관찰-HAR]. 플랜 한도(§11)를 데이터 서버가 이 토큰으로 강제하는 것으로 보인다 [추론] |
 | 서버 시간 | `serverTime() = basePoint + performance.now()`, 응답 시간으로 지연을 보정한다 [정적] |
 
 보조 채널 [관찰]
 - `wss://pushstream.tradingview.com/message-pipe-ws/public`: 경제 이벤트 같은 공용 푸시
+- `wss://pushstream.tradingview.com/message-pipe-ws/private_feed`: 로그인 사용자 개인 피드 [관찰-HAR]
 - `https://notifications.tradingview.com/news/channel`: 뉴스 알림 EventSource
 
 ### 6.2 세션 유형
@@ -436,9 +439,19 @@ S→C  du / timescale_update (지표별 재계산 결과) → study_completed ×
 - 지표는 클라이언트가 다시 요청하지 않는다. **부모 시리즈가 바뀌면 서버가 자식 지표를 자동으로 다시 계산해 보낸다.** [관찰]
 - 클라이언트는 turnaround를 비교해 이전 세대(`s1`) 응답을 버린다(`_checkTurnaround`). 지표는 자기 turnaround, 시리즈 turnaround, `<시리즈>_<지표>` 결합형을 모두 받는다. [정적]
 
-### 6.7 실시간 갱신 [정적][관찰]
+### 6.7 실시간 갱신 [정적][관찰][관찰-HAR]
 
 - 거래 시간 중에는 `du`로 마지막 바(같은 index → `updateLast`)나 새 바(append)가 온다.
+- 실제 장중 틱 예시(`TVC:SPX` 일봉, 로그인 무료 계정) [관찰-HAR]:
+
+  ```
+  << du ["cs_X",{"sds_1":{"s":[{"i":299,"v":[1792416600.0,7702.77,7703.82,7696.87,7703.82]}],
+                           "ns":{"d":"","indexes":"nochange"},"t":"s1",
+                           "lbs":{"bar_close_time":1792440599}}}]
+  ```
+  - 약 2분 동안 `du`가 24회, 대략 5~6초 간격으로 왔다. 모두 같은 index 299의 마지막 바를 고쳐 쓰는 갱신이다(시가 고정, 고가·저가·종가 변경).
+  - `ns.indexes`가 `"nochange"`이면 non-series 데이터는 바뀌지 않았다는 뜻이다.
+  - `lbs.bar_close_time`은 현재 바가 닫히는 시각(Unix 초)이다.
 - 갱신 주기는 `series_completed`의 `rt_update_period`로 알려준다. 익명 사용자는 5초였고 범례에 "One update every 5 seconds"가 표시됐다. [관찰]
 - 유료 플랜의 `TICK_BY_TICK_PUSH_DATA` 기능은 이 제한을 푸는 것으로 보인다. [추론]
 - 시세 필드는 `qsd`로 바뀐 필드만 증분 전송된다(예: `{"v":{"lp":1.33258}}`). [관찰]
@@ -452,19 +465,86 @@ S→C  du / timescale_update (지표별 재계산 결과) → study_completed ×
 | 동작 | 요청 |
 |---|---|
 | 저장 | `POST /api/v1/charts/save/` (multipart). 필드: `name`, `symbol`, `short_name`, `symbol_type`, `exchange`, `resolution`, `content`, `study_meta_info_map`, `image_url`(id). `content`와 `study_meta_info_map`은 **`async-gzip.worker`로 gzip 압축한 Blob**(`blob.gz`)으로 보낸다. 응답은 `{id, image_url, last_modified}` |
-| 불러오기 | `GET /chart/<url>/json/` → `content`(JSON 문자열)를 파싱. 비어 있으면 기본 레이아웃(Volume 지표가 붙은 단일 차트)을 만든다 |
+| 불러오기 | 페이지 URL `/chart/<url>/`로 열면 **서버가 HTML 안에 레이아웃을 넣어 보낸다**: `initData.content = {…}`, `initData.study_meta_info_map`, `initData.uid`, `chart_id`, `name`, `description`, `readOnly`, `defSymbol`, `defInterval`, `defMetric` 등 [관찰-HAR]. 이미 열린 페이지에서 다른 레이아웃으로 바꿀 때는 `GET /chart/<url>/json/`을 쓰고, 비어 있으면 Volume 지표가 붙은 단일 차트를 만든다 [정적] |
 | 목록/개수/삭제 | `GET /my-charts/?limit=`, `GET /api/v1/charts/count/`, `POST /api/v1/charts/delete/ {"uid":[…]}` |
 | 공유 | `/api/v1/charts/<id>/sharing/` |
 | 오류 코드 | `saved_chart_limit_reached`, `login_required` → 업그레이드·로그인 유도. 5xx 또는 `disabled_temporarily` → 경고 표시 |
 
-레이아웃 상태 기본 골격 [정적]
-```json
-{ "name": "", "layout": "s",
-  "charts": [ { "panes": [ { "mode": "Regular",
-      "sources": [ { "type": "MainSeries", "id": "_seriesId", "zorder": 0,
-                     "state": { "style": 1, "symbol": "NASDAQ:AAPL", … } } ] } ] } ] }
+저장된 레이아웃 `content` 구조. 실제 저장본(단일 차트, `TVC:SPX` 일봉 캔들)에서 확인했다 [관찰-HAR].
+
+```jsonc
+{
+  "name": "Unnamed",
+  "layout": "s",                       // §3.3 레이아웃 코드
+  "charts": [{
+    "chartId": "1", "version": 3, "timezone": "Etc/UTC", "linkingGroup": null,
+    "shouldBeSavedEvenIfHidden": true,
+    "panes": [{
+      "mode": 0, "mainSourceId": "_seriesId", "stretchFactor": 2000,   // Pane 세로 비율 가중치
+      "isCollapsed": false, "isMaximized": false, "priceScaleRatio": null,
+      "leftAxisesState": [], "overlayPriceScales": {},
+      "rightAxisesState": [{
+        "state": { "id": "<scaleId>", "m_priceRange": null, "m_isAutoScale": true,
+                   "m_isPercentage": false, "m_isIndexedTo100": false, "m_isLog": false,
+                   "m_isLockScale": false, "m_isInverted": false,
+                   "m_topMargin": 0.1, "m_bottomMargin": 0.08, "alignLabels": true,
+                   "logFormula": { "logicalOffset": 4, "coordOffset": 0.0001 },
+                   "hasCalculatedPriceRange": true },
+        "sources": ["_seriesId"] }],
+      "sources": [{
+        "type": "MainSeries", "id": "_seriesId", "zorder": 0,
+        "haStyle":   { "studyId": "BarSetHeikenAshi@tv-basicstudies-60" },
+        "renkoStyle":{ "studyId": "BarSetRenko@tv-prostudies-73" },
+        "pbStyle":   { "studyId": "BarSetPriceBreak@tv-prostudies-34" },
+        "kagiStyle": { "studyId": "BarSetKagi@tv-prostudies-73" },
+        "pnfStyle":  { "studyId": "BarSetPnF@tv-prostudies-73" },
+        "rangeStyle":{ "studyId": "BarSetRange@tv-basicstudies-72" },
+        "svpStyle":  { "studyId": "VbPSessions@tv-volumebyprice-126" },
+        "volFootprintStyle": { "studyId": "Footprint@tv-volumebyprice-104" },
+        "tpoStyle":  { "studyId": "TPOSessions@tv-volumebyprice-104" },
+        "formattingDeps": { "pricescale": 100, "minmov": 1, "fractional": false,
+                            "minmove2": 0, "variable_tick_size": "0.01" },
+        "studyBindings": { … },
+        "state": { "style": 1, "symbol": "TVC:SPX", "interval": "D", "timeframe": …,
+                   "candleStyle": { "upColor": "#089981", "downColor": "#F23645",
+                                    "wickUpColor": "#089981", "wickDownColor": "#F23645",
+                                    "borderUpColor": "#089981", "borderDownColor": "#F23645",
+                                    "drawWick": true, "drawBorder": true, "drawBody": true,
+                                    "barColorsOnPrevClose": false, … },
+                   "barStyle": {…}, "lineStyle": {…}, "areaStyle": {…}, …,   // 모든 스타일 설정을 함께 저장
+                   "showPriceLine": …, "prePostMarket": …, "sessionId": …,
+                   "dividendsAdjustment": …, "currencyId": …, "unitId": …, "metricId": …,
+                   "priceAxisProperties": {…} } }]
+      // 지표가 있으면 같은 sources 배열에 type "Study…" 항목으로 들어간다 [추론]
+    }],
+    "timeScale": { "m_barSpacing": 3.9366, "m_rightOffset": 10,
+                   "rightOffsetPercentage": 5, "usePercentageRightOffset": false },
+    "chartProperties": {
+      "paneProperties": { "backgroundType": "solid", "topMargin": 10, "bottomMargin": 8,
+                          "vertGridProperties": { "style": 1, "visible": true, "color": "rgba(46, 46, 46, 0.2)" },
+                          "horzGridProperties": { … },
+                          "crossHairProperties": { "style": 2, "transparency": 0, "width": 1, "color": "#9C9C9C" },
+                          "axisProperties": { "autoScale": true, "log": false, "percentage": false, … },
+                          "legendProperties": {…}, … },
+      "scalesProperties": { "fontSize": …, "showSeriesLastValue": …, "barSpacing": …, … },
+      "tradingProperties": { "showPositions": …, "showOrders": …, "showExecutions": …, … },
+      "chartEventsSourceProperties": { "visible": …, "futureOnly": …, "breaks": … },
+      "publishedChartsTimelineProperties": {…},
+      "priceScaleSelectionStrategyName": "auto", "inactivityGaps": false },
+    "sessions": { "properties": { "sessionHighlight": { "backgrounds": {
+                    "preMarket":  { "color": "#FF9800", "transparency": 92 },
+                    "postMarket": { "color": "#2962FF", "transparency": 92 }, … } } } }
+  }],
+  "symbolLock": 0, "intervalLock": 0, "trackTimeLock": 0, "dateRangeLock": 0, "crosshairLock": 1,
+  "layoutsSizes": { "s": [ { "percent": 1 } ] },
+  "symbolAliasServiceState": []
+}
 ```
-- 가격축 상태 기본값: `m_isAutoScale`, `m_isPercentage`, `m_isIndexedTo100`, `m_isLog`, `m_isLockScale`, `m_isInverted`, `m_topMargin: 0.1`, `m_bottomMargin: 0.08`, `alignLabels: true`
+
+- 메인 시리즈에는 합성 차트 스타일별 서버 스터디 ID와 버전(예: `BarSetRenko@tv-prostudies-73`)이 함께 저장된다. 스타일을 바꿀 때 이 ID로 `create_series`의 스터디 심볼을 만든다(§4.2). [관찰-HAR][추론]
+- 차트 간 잠금(`symbolLock`, `intervalLock`, `trackTimeLock`, `dateRangeLock`, `crosshairLock`)은 레이아웃 최상위에 저장된다. §3.3의 차트 동기화 설정이다.
+- **드로잉은 `content`에 들어 있지 않다.** 이 레이아웃에 Ray 드로잉이 하나 있었지만, 그 데이터는 §7.2의 charts-storage에서만 왔다. [관찰-HAR]
+- 저장 목록 `GET /my-charts/` 응답 항목: `id`, `image_url`(= 레이아웃 URL id), `name`, `symbol`, `pro_symbol`, `short_name`, `resolution`/`interval`, `created`, `modified`, `created_timestamp`, `modified_iso`, `url`, `favorite` [관찰-HAR]
 
 ### 7.2 드로잉 (charts-storage) [정적]
 
@@ -478,6 +558,43 @@ S→C  du / timescale_update (지표별 재계산 결과) → study_completed ×
   - `lineToolsWithoutSymbol`: 심볼과 무관한 드로잉
 - 삭제: `DELETE <path>?layout_id=&symbol=&jwt=`
 - 공유 범위 `SharingMode`: `NotShared=0`(차트별), `SharedInLayout=1`(레이아웃 안 공유, chartId `_shared`), `GloballyShared=2`(모든 레이아웃 공유)
+
+실제 불러오기 흐름. 레이아웃 `4fv3f4cL`, 심볼 `TVC:SPX`에서 확인했다 [관찰-HAR].
+
+```
+GET  /chart-token/?image_url=<layoutId>&user_id=<id>   → {"token":"<JWT>"}   (페이지 로드 중 9회 호출)
+GET  charts-storage/get/user/sources?layout_id=…&jwt=…&symbol=                         ← GloballyShared, 심볼 무관
+GET  charts-storage/get/layout/<id>/sources?chart_id=1&…&symbol=&includeOwnerSource=_seriesId   ← NotShared
+GET  charts-storage/get/layout/<id>/sources?chart_id=1&…&excludeOwnerSource=_seriesId          ← 지표에 붙은 드로잉
+GET  charts-storage/get/user/sources?…&symbol=TVC:SPX&brokerName=
+GET  charts-storage/get/layout/<id>/sources?chart_id=_shared&…&symbol=TVC:SPX&brokerName=      ← SharedInLayout
+```
+
+- charts-storage JWT 클레임: `type`, `layoutId`, `ownerId`, `shared`, `iss`, `iat`, `exp`. 유효 기간은 약 10일(14,460분)이다.
+- 응답 형식은 `{"success":true,"payload":{…}}`이다. 바뀐 게 없으면 `304`와 빈 `payload`가 온다(조건부 요청 캐시).
+- 드로잉 DTO 예시(Ray, 값 일부 생략):
+
+```json
+{ "success": true, "payload": { "sources": { "o8Sxvx": {
+  "id": "o8Sxvx", "symbol": "TVC:SPX", "ownerSource": "_seriesId",
+  "serverUpdateTime": 1792416705286,
+  "state": {
+    "type": "LineToolRay", "id": "o8Sxvx",
+    "state": { "linecolor": "#2962FF", "linewidth": 2, "linestyle": 0,
+               "extendLeft": false, "extendRight": true,
+               "showPriceRange": false, "showBarsRange": false, "showAngle": false, "statsPosition": 2,
+               "text": "", "fontsize": 14, "bold": false, "italic": false,
+               "interval": "D", "symbol": "TVC:SPX", "currencyId": null, "unitId": null, "metricId": "price",
+               "visible": true, "frozen": false, "title": "",
+               "symbolStateVersion": 2, "zOrderVersion": 2, "adjustedToSplitTime": 1792416702.501, … },
+    "points": [ { "time_t": 1785331800, "offset": 0, "price": 7316.16, "interval": "D" },
+                { "time_t": 1789565400, "offset": 0, "price": 7507.77, "interval": "D" } ],
+    "zorder": -5000, "ownerSource": "_seriesId", "linkKey": "XwLTETRWa3f4", "sharingMode": 1 } } } } }
+```
+
+- 드로잉의 기준 키: `ownerSource`(붙어 있는 소스, 보통 메인 시리즈 `_seriesId`), `symbol`, `sharingMode`, `linkKey`(차트 간 동기화 키), `zorder`(드로잉은 음수 영역).
+- 점은 `time_t`(바 시작 시각) + `offset`(바 개수 오프셋) + `price` + 기록 당시 `interval`로 저장한다. 인터벌과 무관하게 같은 위치를 복원하려는 설계로 보인다. [추론]
+- 분할 조정 기준 시각(`adjustedToSplitTime`)을 기록해 둔다. 주식 분할 뒤에 가격을 보정하는 데 쓰는 것으로 보인다. [추론]
 
 ### 7.3 템플릿 [정적]
 
@@ -574,7 +691,15 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 
 ### 9.2 동작
 
-- 점 모델: 각 점은 `(time, price)`다. 아직 바가 없는 미래 시간은 오프셋으로 표현하고, 서버 **pointset**(`create_pointset(cs, "pointset_<suffix>_<n>", "turnaround", symId, resolution, [[time_t, offset]…])`)으로 bar index를 받아 배치한다. [정적]
+- 점 모델: 각 점은 `(time, price)`다. 아직 바가 없는 미래 시간은 오프셋으로 표현하고, 서버 **pointset**으로 bar index를 받아 배치한다. [정적] 실제 메시지는 다음과 같다 [관찰-HAR].
+
+  ```
+  >> create_pointset ["cs_X","pointset_1","turnaround","sds_sym_1","D",[1785331800,0,"D"],[1789565400,0,"D"]]
+  << du ["cs_X",{"pointset_1":{"plots":[{"index":0,"value":[242,1785331800]},
+                                         {"index":1,"value":[276,1789565400]}],"t":"turnaround"}}]
+  ```
+  - 요청 점 하나 = `[time_t, offset, interval]`. 응답 `value` = `[bar index, time_t]`.
+  - 저장된 Ray 드로잉의 두 점(§7.2)이 메인 시리즈 index 242와 276으로 바뀌었다. 레이아웃을 열 때 드로잉을 그리기 전에 이 변환을 거친다.
 - 생성 흐름: 툴 선택 → 클릭으로 점 추가(`continueCreatingLine`) → 마지막 점에서 완료(`_finishTool`). 브러시처럼 드래그하는 도구(`isLineDrawnWithPressedButton`)는 버튼을 누른 채 그린다. Esc는 `cancelCreatingLineTool`. [정적]
 - 마그넷(§4.5), "계속 그리기"(`stayInDrawingMode`), 모든 차트에 그리기(`drawOnAllCharts`), 잠금·숨김·일괄 삭제(툴바 [관찰])
 - 그룹(`LineToolsGroup`, 중첩 그룹은 유료 기능 `NESTED_DRAWING_GROUPS`), 객체 트리 패널, 템플릿(§7.3)
@@ -625,12 +750,13 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 
 | 항목 | 상태 | 이유 / 다음 단계 |
 |---|---|---|
-| Pine 지표(`STD;RSI` 등)의 `create_study` 실제 인자 | 미관찰 | 익명 사용자에게 가입 유도 모달이 떠서 막힘. 로그인 세션으로 재관찰 필요 |
-| 장중 실시간 `du` 틱의 실제 형태 | 정적 근거만 있음 | 관찰 시점이 미국 장전(pre-market)이라 메인 시리즈 틱이 오지 않았다. 정규장 시간에 재관찰 필요 |
+| Pine 지표(`STD;RSI` 등)의 `create_study` 실제 인자, `modify_study`/`remove_study` | 미관찰 | 익명은 가입 유도 모달에 막혔고, 로그인 HAR에는 마지막 새로고침 이후만 들어 있었다. "Preserve log"를 켠 상태에서 지표 추가부터 다시 녹화해야 한다 |
+| 레이아웃 저장 요청(`POST /api/v1/charts/save/`)과 드로잉 저장(`PUT charts-storage`) | 미관찰 | 위와 같은 이유. 저장 결과물(`initData.content`, 드로잉 DTO)은 §7에서 확인했다 |
+| 장중 실시간 `du` 틱의 실제 형태 | **확인됨** | 로그인 HAR에서 5~6초 간격의 마지막 바 갱신을 확인했다(§6.7) |
+| 레이아웃 `content` JSON 구조 | **확인됨** (지표 항목 제외) | 저장된 레이아웃에 지표가 없어 지표 소스의 저장 형식은 미확인 |
 | 서버의 지표 계산 알고리즘 | 범위 밖 | 서버 측 구현이라 클라이언트 분석으로는 알 수 없다. 표준 지표 정의는 공개 Pine 소스(`STD;*`)를 참고 |
 | `14041.*.js` 의미 분석 | 부분 | 분석기 힙 한도. 정적 사실(문자열·구조)만 남음 |
 | 지연 청크 전수 분석 | 부분 | 차트 관련 52개 청크만 받았다. 전체 이름 있는 청크는 1,035개 |
-| 레이아웃 `content` JSON 전체 스키마 | 부분 | 기본 골격과 가격축 상태만 확인. 로그인 후 저장된 레이아웃 JSON으로 보강 필요 |
 | 차트 동기화 옵션·단축키 목록 | 미분석 | 이번 범위에서 제외 |
 
 - 정적 분석은 코드가 존재함을 보여줄 뿐, 실행 경로를 증명하지 않는다. [정적] 항목 중 런타임에서 확인한 것은 [관찰]을 같이 붙였다.
@@ -648,6 +774,7 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 | 지표 대화상자 / 검색 | `ev_e124b544…1a61`, `ev_93696dad…92ea` | 대화상자 구조, `RSI` 검색 결과 |
 | 지표 항목 DOM | (DOM 캡처) | `data-role="list-item" data-id="STD;RSI"` |
 | 지표 추가 시도 | `ev_c90b2302…10d9` | `pine-facade/list?filter=*` 요청, 가입 유도 모달 |
+| 로그인 세션 HAR | (사용자 제공 파일, 저장소 미포함) | 저장된 레이아웃 열기, `initData.content`, charts-storage 드로잉 DTO, pointset, 실시간 `du` 24회, 인증 JWT 클레임 이름 |
 
 ## 부록 B. 재현 절차
 
