@@ -59,6 +59,11 @@ export class MainSeries {
     return this.style;
   }
 
+  /** Id of the resolved symbol the series was created with; pointsets must use the same one. */
+  getSymbolId(): string | null {
+    return this.symbolId;
+  }
+
   getSymbolInfo(): SymbolInfo | null {
     return this.symbolInfo;
   }

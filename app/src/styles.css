@@ -74,6 +74,115 @@ body {
   padding: 0 8px;
 }
 
+.workspace {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  min-height: 0;
+}
+
+.drawing-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  border-right: 1px solid #e0e3eb;
+  overflow-y: auto;
+}
+
+.draw-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #131722;
+  cursor: pointer;
+}
+
+.draw-button:hover {
+  background: #f0f3fa;
+}
+
+.draw-button.active {
+  color: #2962ff;
+  background: #e3effd;
+}
+
+.draw-button.strong {
+  color: #ffffff;
+  background: #2962ff;
+}
+
+.draw-separator {
+  width: 28px;
+  height: 1px;
+  margin: 4px 0;
+  background: #e0e3eb;
+}
+
+/* Top right of the chart, clear of the top-left legend and the price axis. */
+.floating-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 96px;
+  z-index: 2;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid #e0e3eb;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.swatch {
+  width: 20px;
+  height: 20px;
+  margin: 0 1px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.swatch.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px #131722;
+}
+
+.floating-button {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #131722;
+  font: inherit;
+  cursor: pointer;
+}
+
+.floating-button:hover {
+  background: #f0f3fa;
+}
+
+.floating-button.active {
+  color: #2962ff;
+  background: #e3effd;
+}
+
+.floating-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: #e0e3eb;
+}
+
 .chart-host {
   position: relative;
   min-height: 0;

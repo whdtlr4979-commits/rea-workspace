@@ -39,4 +39,6 @@ npm run typecheck
 npm run dev        # http://127.0.0.1:5173
 ```
 
+드로잉 도구(`app/src/drawing/`)는 앵커를 바 시각 + 오프셋 + 가격 + 인터벌로 저장하고, 다른 인터벌에서는 서버 `create_pointset`으로 바 번호를 다시 계산합니다. 심볼별로 localStorage에 저장합니다.
+
 구조와 지원 기능은 `app/README.md`에 있습니다.

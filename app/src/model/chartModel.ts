@@ -1,5 +1,7 @@
 import type { ChartSession } from '../api/chartApi';
 import { ChartStyle, InvalidationLevel, PriceScaleMode, SeriesPlotIndex, type BarIndex, type Resolution } from '../core/types';
+import { DrawingManager, type DrawingHost } from '../drawing/drawingManager';
+import { MemoryDrawingStorage, type DrawingStorage } from '../drawing/storage';
 import type { StudyInputs, SymbolInfo } from '../protocol/messages';
 import type { MinMax } from './plotList';
 import { PriceScale } from './priceScale';
@@ -55,14 +57,19 @@ export interface ChartModelOptions {
   ticker: string;
   resolution: Resolution;
   style: ChartStyle;
+  /** Where drawings are persisted; defaults to in-memory. */
+  drawingStorage?: DrawingStorage;
+  /** Debounce for drawing saves; 0 saves synchronously (tests). */
+  drawingSaveDelayMs?: number;
 }
 
 type InvalidateListener = (level: InvalidationLevel) => void;
 
-export class ChartModel {
+export class ChartModel implements DrawingHost {
   readonly timeScale = new TimeScale();
   readonly panes: Pane[] = [];
   readonly series: MainSeries;
+  readonly drawings: DrawingManager;
   readonly crosshair: CrosshairState = { visible: false, pointerX: 0, x: 0, y: 0, index: 0, pane: null };
   private readonly listeners: InvalidateListener[] = [];
   private readonly structureListeners: (() => void)[] = [];
@@ -71,7 +78,7 @@ export class ChartModel {
   private dataSeen = false;
 
   constructor(
-    private readonly session: ChartSession,
+    readonly session: ChartSession,
     options: ChartModelOptions,
   ) {
     this.panes.push(new Pane(this.nextPaneId(), true, MAIN_PANE_STRETCH));
@@ -83,6 +90,7 @@ export class ChartModel {
       },
       onSymbolResolved: (info) => this.onSymbolResolved(info),
     });
+    this.drawings = new DrawingManager(this, options.drawingStorage ?? new MemoryDrawingStorage(), options.drawingSaveDelayMs);
   }
 
   start(): void {
@@ -91,6 +99,10 @@ export class ChartModel {
 
   mainPane(): Pane {
     return this.panes[0];
+  }
+
+  mainPriceScale(): PriceScale {
+    return this.mainPane().priceScale;
   }
 
   onInvalidate(listener: InvalidateListener): void {
@@ -120,6 +132,7 @@ export class ChartModel {
     this.timeScale.setDataRange(data.firstIndex(), data.lastIndex());
     if (reset && this.dataSeen) this.timeScale.reset();
     this.dataSeen = true;
+    if (reset) this.drawings.onSeriesReset();
     this.snapCrosshair();
     this.updateAutoScale();
     this.invalidate(InvalidationLevel.Full);
@@ -128,6 +141,7 @@ export class ChartModel {
   // --- user-facing operations -------------------------------------------------------------
 
   setTicker(ticker: string): void {
+    this.drawings.setSymbol(ticker);
     this.series.modify({ ticker });
   }
 
