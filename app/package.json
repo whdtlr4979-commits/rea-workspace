@@ -1,0 +1,19 @@
+{
+  "name": "chart-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Canvas charting engine MVP built from specs/charting.md",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "vite": "5.4.21",
+    "vitest": "2.1.9"
+  }
+}

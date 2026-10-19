@@ -1,0 +1,21 @@
+/** Light theme colours. Up/down defaults come from the saved layout in spec §7.1. */
+export const THEME = {
+  background: '#ffffff',
+  grid: '#f0f3fa',
+  border: '#e0e3eb',
+  text: '#131722',
+  axisText: '#4a4e59',
+  up: '#089981',
+  down: '#F23645',
+  wick: '#737375',
+  line: '#2962FF',
+  areaTop: 'rgba(41, 98, 255, 0.28)',
+  areaBottom: 'rgba(41, 98, 255, 0.02)',
+  volumeUp: 'rgba(8, 153, 129, 0.45)',
+  volumeDown: 'rgba(242, 54, 69, 0.45)',
+  crosshair: '#9C9C9C',
+  crosshairLabel: '#131722',
+  font: '12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif',
+  minPriceAxisWidth: 56,
+  timeAxisHeight: 28,
+};
