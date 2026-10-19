@@ -15,6 +15,7 @@
 - 정적 분석 범위: 차트 페이지 HTML이 참조하는 초기 번들 56개 + 인라인 스크립트 + 차트 관련 지연 로드 청크 52개 (총 109개 파일, 약 6.2MB). REA `analyze_javascript_application`으로 모듈 그래프(4,526개 모듈)를 만들고, 나머지는 직접 읽었다. `14041.*.js`는 분석기 힙 한도로 의미 분석이 빠졌다.
 - 런타임 관찰 범위: 익명 사용자로 차트 로드, 하단 `5D` 버튼으로 타임프레임 변경, 지표 대화상자 열기와 검색. 지표 추가는 익명 사용자에게 가입 유도 모달(regwall)이 떠서 막혔다(→ §8.6).
 - 로그인 세션 HAR(Chrome sanitized 내보내기, 2026-10-19 13:32 UTC): 저장된 레이아웃 `/chart/<id>/`을 다시 연 시점부터 약 2분 구간이다. WebSocket 메시지 351개와 HTTP 요청 782개가 들어 있다. 이 구간에서 레이아웃 불러오기, 드로잉 불러오기, pointset, 장중 실시간 틱을 확인했다(아래 **[관찰-HAR]**). HAR 원본에는 인증 토큰이 남아 있어 저장소에 넣지 않았다.
+- 로그인 세션 HAR 2(같은 날 13:4x UTC, "Preserve log" 녹화): RSI 추가 → 길이 14→21 변경 → 삭제 → 추세선 그리기 → Save 순서다. 지표 생명주기, Pine 컴파일 호출, 드로잉 저장, 레이아웃 저장 요청을 확인했다(**[관찰-HAR2]**). 이 파일도 저장소에 넣지 않았다.
 - 모듈 이름은 번들 안의 로거 이름(`getLogger("Chart.TimeScale")` 등)과 webpack 청크 이름을 기준으로 적었다. 숫자 청크 해시는 배포마다 바뀐다.
 
 ---
@@ -385,7 +386,7 @@ Seasonals 위젯 같은 보조 차트는 `chart_create_session(id, "disable_stat
 | `du` (= `data_update`) | 실시간 또는 추가 데이터. 객체 ID별로 `s`(series) 또는 `st`(study) 배열과 `ns`(non-series), `t`(turnaround), `lbs.bar_close_time` |
 | `timescale_update` | 위 데이터 + 시간축 변경셋 `{index, zoffset, changes[], marks[[span,time,index]…], index_diff[[old,new]…], last_session_switches}` |
 | `tickmark_update`, `index_update`, `clear_data` | 눈금 갱신, index 재매핑, 데이터 초기화 |
-| `study_loading` / `study_completed` / `study_error` | 지표 상태 |
+| `study_loading` / `study_completed` / `study_error` / `study_deleted` | 지표 상태. `study_deleted`는 `remove_study`에 대한 확인 응답 [관찰-HAR2] |
 | `pointset_error` 등 | pointset 결과 |
 | `qsd` (= `quote_symbol_data`) / `quote_completed` | 시세 필드 증분. `n`=심볼, `s`=상태, `v`=값. 짧은 키는 풀어서 쓴다(`lp`→`last_price`, `ch`→`change`, `chp`→`change_percent`) |
 | `dd`, `dpu`, `depth_*` | 호가 깊이 |
@@ -464,7 +465,7 @@ S→C  du / timescale_update (지표별 재계산 결과) → study_completed ×
 
 | 동작 | 요청 |
 |---|---|
-| 저장 | `POST /api/v1/charts/save/` (multipart). 필드: `name`, `symbol`, `short_name`, `symbol_type`, `exchange`, `resolution`, `content`, `study_meta_info_map`, `image_url`(id). `content`와 `study_meta_info_map`은 **`async-gzip.worker`로 gzip 압축한 Blob**(`blob.gz`)으로 보낸다. 응답은 `{id, image_url, last_modified}` |
+| 저장 | `POST /api/v1/charts/save/` (multipart). `content`와 `study_meta_info_map`은 **`async-gzip.worker`로 gzip 압축한 Blob**(`blob.gz`)으로 보낸다 [정적]. 실제 요청 필드는 `image_url`(=`4fv3f4cL`), `resolution`(`D`), `symbol_type`(`index`), `exchange`(`TVC`), `listed_exchange`, `symbol`(`TVC:SPX`), `short_name`, `legs`(`[{"symbol":"TVC:SPX","pro_symbol":"TVC:SPX"}]`), `name`, `description`, `is_realtime`(`1`), `content`(`filename="blob.gz"`, `Content-Type: application/gzip`, gzip 매직 `1f 8b`)였다. 응답은 `{"id":208500038,"image_url":"4fv3f4cL","last_modified":<unix 초>}` [관찰-HAR2]. 지표가 없을 때는 `study_meta_info_map`을 보내지 않았다 |
 | 불러오기 | 페이지 URL `/chart/<url>/`로 열면 **서버가 HTML 안에 레이아웃을 넣어 보낸다**: `initData.content = {…}`, `initData.study_meta_info_map`, `initData.uid`, `chart_id`, `name`, `description`, `readOnly`, `defSymbol`, `defInterval`, `defMetric` 등 [관찰-HAR]. 이미 열린 페이지에서 다른 레이아웃으로 바꿀 때는 `GET /chart/<url>/json/`을 쓰고, 비어 있으면 Volume 지표가 붙은 단일 차트를 만든다 [정적] |
 | 목록/개수/삭제 | `GET /my-charts/?limit=`, `GET /api/v1/charts/count/`, `POST /api/v1/charts/delete/ {"uid":[…]}` |
 | 공유 | `/api/v1/charts/<id>/sharing/` |
@@ -592,6 +593,25 @@ GET  charts-storage/get/layout/<id>/sources?chart_id=_shared&…&symbol=TVC:SPX&
     "zorder": -5000, "ownerSource": "_seriesId", "linkKey": "XwLTETRWa3f4", "sharingMode": 1 } } } } }
 ```
 
+**드로잉 저장 요청** [관찰-HAR2] — 추세선(Extended line)을 그린 직후, Save를 누르기 전에 자동으로 보낸다.
+
+```
+GET /chart-token/?image_url=4fv3f4cL&user_id=…        → 새 JWT
+PUT charts-storage/layout/4fv3f4cL/sources?chart_id=_shared&layout_id=4fv3f4cL&jwt=<JWT>
+    헤더: content-type: application/json, x-build-time: <BUILD_TIME>
+    본문: { "sources": { "eq5ppZ": { "id": "eq5ppZ", "ownerSource": "_seriesId",
+                                     "symbol": "TVC:SPX", "currencyId": null, "unitId": null,
+                                     "state": { "type": "LineToolExtended", "state": {…}, "points": [...],
+                                                "zorder": -5000, "linkKey": "…", "sharingMode": 1 } } },
+            "drawing_groups": {},
+            "clientId": "4fv3f4cL/1/<무작위>" }
+→ {"success":true,"payload":{"serverUpdateTime":1792417398}}
+```
+
+- 드로잉은 레이아웃 Save와 상관없이 바로 저장된다. 레이아웃 저장(`/api/v1/charts/save/`)은 그 7초 뒤 Save를 눌렀을 때 따로 나갔다.
+- `clientId` = `<layoutId>/<chartId>/<무작위>`. 같은 레이아웃을 연 다른 탭이나 기기가 자기 변경을 구분하는 데 쓰는 것으로 보인다. [추론]
+- 변경 알림 구독: 페이지 로드 때 `GET https://notifications.tradingview.com/auth/charts-storage/layout/<id>/subscribe?id=private`(SSE)를 연다. 다른 클라이언트의 드로잉 변경을 실시간으로 받는 통로로 보인다. [관찰-HAR2][추론]
+
 - 드로잉의 기준 키: `ownerSource`(붙어 있는 소스, 보통 메인 시리즈 `_seriesId`), `symbol`, `sharingMode`, `linkKey`(차트 간 동기화 키), `zorder`(드로잉은 음수 영역).
 - 점은 `time_t`(바 시작 시각) + `offset`(바 개수 오프셋) + `price` + 기록 당시 `interval`로 저장한다. 인터벌과 무관하게 같은 위치를 복원하려는 설계로 보인다. [추론]
 - 분할 조정 기준 시각(`adjustedToSplitTime`)을 기록해 둔다. 주식 분할 뒤에 가격을 보정하는 데 쓰는 것으로 보인다. [추론]
@@ -654,6 +674,80 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 - 결과는 `translate` 요청 키(`<id>-<version>`)별로 캐시한다. 버전이 음수(옛 스크립트)면 캐시를 무효화한다.
 - 메타정보 `fullId`의 패키지가 `tv-scripting`이면 `{type:"pine", pineId}`로 분류한다.
 
+#### 8.3.1 실제 흐름: RSI 추가 → 길이 변경 → 삭제 [관찰-HAR2]
+
+로그인 무료 계정, `TVC:SPX` 일봉에서 녹화했다. 시각은 페이지 로드 기준 초다.
+
+```
+ 5.2  GET  pine-facade/list?filter=standard | candlestick | fundamental | saved   ← 대화상자 목록
+19.7  GET  pine-facade/translate/STD%3BRSI/47.0      → {success, result:{IL, ilTemplate, metaInfo}, reason2:{warnings}}
+19.8  GET  pine-facade/is_auth_to_get/STD%3BRSI/47.0 → true
+19.8  GET  pine-facade/versions/STD%3BRSI/last       → [{"created":"2026-09-29T…Z","version":"47.0"}]
+~20   >> create_study ["cs_X","nrAKNE","st1","sds_1","Script@tv-scripting-101!", {inputs}]
+      << study_loading ["cs_X","nrAKNE","s1_st1"]
+~40   << du {"nrAKNE":{"st":[{"i":-1000100,"v":[time, plot_0 … plot_13]}, …]}}  → study_completed
+      << du {"nrAKNE":{"st":[{"i":299,…}],"ns":{"indexes":"nochange"}}}   ← 이후 실시간 갱신(마지막 바만)
+48    POST pine-facade/eval_pine_ex/  (username, source=<메타 표현식 트리>, inputs={…in_0:21…})
+      >> modify_study ["cs_X","nrAKNE","st2", {inputs, in_0 = 21}]
+      << study_loading ["cs_X","nrAKNE","s1_st2"]  → (약 32초 뒤) du 전체 재계산 → study_completed
+93    >> remove_study ["cs_X","nrAKNE"]
+      << study_deleted ["cs_X","nrAKNE","s1_st2"]
+```
+
+**`create_study` 입력값 구조** (RSI)
+
+| 키 | 값 예시 | 설명 |
+|---|---|---|
+| `text` | `"bmI9Ks46_…"` (2,858자) | `translate` 응답의 **`ilTemplate`** 값 그대로. 서버 실행용 컴파일 결과로, 불투명 문자열(암호화/인코딩)이다 |
+| `pineId` | `"STD;RSI"` | 스크립트 ID |
+| `pineVersion` | `"47.0"` | `versions/<id>/last`로 확인한 스크립트 버전 |
+| `pineFeatures` | `{"v":"{\"indicator\":1,\"plot\":1,\"ta\":1,\"math\":1,\"alertcondition\":1}","f":true,"t":"text"}` | 스크립트가 쓰는 Pine 기능 목록 |
+| `in_0` … `in_7` | `{"v":14,"f":true,"t":"integer"}` | 사용자 입력. 모든 입력은 `{v: 값, f: true, t: 타입}` 형식 |
+| `__fast_calc`, `__profile` | `{"v":false,…,"t":"bool"}` | 빠른 계산, 프로파일러 플래그 |
+
+RSI 입력 정의(메타정보 `inputs`): `in_0` RSI Length(integer 14), `in_1` Source(source close), `in_2` Calculate Divergence(bool false), `in_3` Type(text "SMA" — MA 종류), `in_4` Length(integer 14), `in_5` BB StdDev(float 2), `in_6` Timeframe(resolution ""), `in_7` Wait for timeframe closes(bool true).
+
+**동작 규칙**
+- 지표 ID는 `Script@tv-scripting-101!`로 고정이다. 실제 지표는 `pineId`와 `text`로 구분한다. 끝의 `!`는 메타정보 버전을 그대로 쓰라는 표시로 보인다(`_forceUseExclamationMark`). [관찰-HAR2][추론]
+- 입력을 바꾸면 지표를 지웠다 새로 만들지 않고 **`modify_study`로 입력 전체를 다시 보낸다.** 지표 turnaround가 올라가고(`st1` → `st2`) 바뀐 키는 `in_0`(14 → 21)뿐이었으며 `text`는 그대로다.
+- 서버는 입력이 바뀌면 처음부터 다시 계산해서 전체 plot을 보낸다(음수 index 워밍업 구간 포함).
+- 삭제하면 `remove_study`를 보내고 서버가 `study_deleted`로 확인한다. §6.4 목록에 없던 응답이다.
+- **계산 지연**: 무료 계정 기준 첫 계산 약 20초, 재계산 약 32초가 걸렸다. 이 사이 범례는 로딩 상태다. 이번 1회 측정값이라 서버 부하에 따라 달라질 수 있다.
+
+**`translate` 응답** (`result`)
+- `IL`과 `ilTemplate` 두 개의 컴파일 결과가 온다. `create_study`에는 `ilTemplate`이 쓰였다. `IL`의 용도는 미확인이다.
+- `metaInfo` 키: `id`(`Script$STD;RSI@tv-scripting-101`), `scriptIdPart`, `description`, `shortDescription`, `is_price_study`(false → 별도 Pane), `isTVScript`, `pine{digest, version}`, `format{type:"price", precision:2}`, `inputs`, `plots`, `styles`, `defaults`(styles·inputs·bands·filledAreasStyle·palettes), `bands`, `filledAreas`, `palettes`, `TVScriptMetaInfoExprs`, `behind_chart`, `isMTFResolution`, `docs`, `warnings` 등
+- `reason2.warnings`: 컴파일러 경고. 경고 코드, 함수 이름, 소스 줄/열 위치가 들어 있다(예: `CW10002`).
+
+**RSI 출력 형식** (`metaInfo.plots`와 `du`의 `v` 배열 대응)
+
+| v 위치 | plot | type | 제목(styles) |
+|---:|---|---|---|
+| 0 | — | — | 시각 |
+| 1 | `plot_0` | line | RSI |
+| 2 | `plot_1` | line | (숨김) |
+| 3 | `plot_2` | line | RSI-based MA |
+| 4–5 | `plot_3`, `plot_4` | line | 볼린저 밴드 상·하단 (Type이 BB일 때만 값) |
+| 6 | `plot_5` | colorer | 색 지정 |
+| 7 | `plot_6` | line | |
+| 8 | `plot_7` | colorer | |
+| 9 | `plot_8` | shapes | 다이버전스 라벨 |
+| 10 | `plot_9` | line | |
+| 11 | `plot_10` | colorer | |
+| 12 | `plot_11` | shapes | Regular Bearish Label |
+| 13–14 | `plot_12`, `plot_13` | alertcondition | Regular Bullish/Bearish Divergence 알림 조건 |
+
+- 값이 없는 plot은 `1e+100`으로 온다(§4.2).
+- 수평선 `bands` 3개: Upper / Middle / Lower Band (`hline_0..2`).
+- 채우기 영역 `filledAreas` 4개: 배경(hline–hline), 과매수·과매도 그라디언트(plot–plot), BB 배경.
+
+**`eval_pine_ex` — 입력값에 따른 표시 설정 계산**
+- `metaInfo.TVScriptMetaInfoExprs = {tree, patchMap}`
+  - `tree`: `//@version=6`으로 시작하는 메타 표현식 스크립트. `##root(...)`, `##input(..., ##id='in_2')` 같은 특수 문법을 쓴다.
+  - `patchMap`: `"defaults.styles.plot_2.display": "rm_3"`처럼 메타정보 경로와 결과 변수를 연결한다.
+- 입력이 바뀌면 클라이언트가 `POST /pine-facade/eval_pine_ex/`에 `source=<tree>`, `inputs=<JSON>`을 보낸다. 서버가 `{"result":{"rootValues":{"rm_0":"price","rm_3":4294967295,…}}}`를 돌려준다.
+- 클라이언트는 이 값을 `patchMap`대로 메타정보 기본값에 덮어쓴다. 예를 들어 MA Type이 "SMA + Bollinger Bands"일 때만 BB plot과 BB 채우기를 보이게 하는 식이다. 이 계산도 서버에서 한다.
+
 ### 8.4 지표 출력 데이터
 
 - **Series plot**: `st: [{i, v:[time, plot0, plot1, …]}]`. `studyPlotFunctionMap`이 메타정보 `plots[k].id`를 `v[k+1]`에 연결한다. `null`/`undefined`는 빈 값.
@@ -670,7 +764,7 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 ### 8.6 익명 사용자 제한 [관찰]
 
 - 지표 대화상자 목록(`list?filter=standard`)은 보인다. 하지만 항목을 클릭하면 **"Access over 100,000 trading indicators … You'll need a free account" 모달**이 뜨고 `create_study`를 보내지 않는다.
-- 그래서 `STD;RSI`의 `create_study` 실제 인자(Pine 컴파일 결과 포함)는 이번 분석에서 관찰하지 못했다(§12).
+- 로그인 무료 계정에서는 추가가 됐다(§8.3.1). 무료 플랜의 지표 한도는 2개다(§11).
 
 ---
 
@@ -750,8 +844,10 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 
 | 항목 | 상태 | 이유 / 다음 단계 |
 |---|---|---|
-| Pine 지표(`STD;RSI` 등)의 `create_study` 실제 인자, `modify_study`/`remove_study` | 미관찰 | 익명은 가입 유도 모달에 막혔고, 로그인 HAR에는 마지막 새로고침 이후만 들어 있었다. "Preserve log"를 켠 상태에서 지표 추가부터 다시 녹화해야 한다 |
-| 레이아웃 저장 요청(`POST /api/v1/charts/save/`)과 드로잉 저장(`PUT charts-storage`) | 미관찰 | 위와 같은 이유. 저장 결과물(`initData.content`, 드로잉 DTO)은 §7에서 확인했다 |
+| Pine 지표(`STD;RSI`)의 `create_study`, `modify_study`, `remove_study` | **확인됨** | 두 번째 로그인 HAR(§8.3.1) |
+| 레이아웃 저장 요청(`POST /api/v1/charts/save/`)과 드로잉 저장(`PUT charts-storage`) | **확인됨** | §7.1, §7.2. 단 gzip `content` 본문은 HAR 텍스트 변환 과정에서 바이너리가 깨져 풀 수 없었다. 저장 결과는 `initData.content`(§7.1)로 확인했다 |
+| 지표가 들어간 레이아웃의 `content` 형식, `study_meta_info_map` | 미관찰 | RSI를 지운 뒤 저장해서 지표 소스가 없었다. 지표를 둔 채 저장하고 다시 열면 확인할 수 있다 |
+| `ilTemplate`/`IL` 문자열의 내부 형식 | 범위 밖 | 불투명 인코딩. 서버 실행용 컴파일 결과로만 다룬다 |
 | 장중 실시간 `du` 틱의 실제 형태 | **확인됨** | 로그인 HAR에서 5~6초 간격의 마지막 바 갱신을 확인했다(§6.7) |
 | 레이아웃 `content` JSON 구조 | **확인됨** (지표 항목 제외) | 저장된 레이아웃에 지표가 없어 지표 소스의 저장 형식은 미확인 |
 | 서버의 지표 계산 알고리즘 | 범위 밖 | 서버 측 구현이라 클라이언트 분석으로는 알 수 없다. 표준 지표 정의는 공개 Pine 소스(`STD;*`)를 참고 |
@@ -775,6 +871,7 @@ create_study(…, "Script@tv-scripting-…", { text: <컴파일 결과>, 사용�
 | 지표 항목 DOM | (DOM 캡처) | `data-role="list-item" data-id="STD;RSI"` |
 | 지표 추가 시도 | `ev_c90b2302…10d9` | `pine-facade/list?filter=*` 요청, 가입 유도 모달 |
 | 로그인 세션 HAR | (사용자 제공 파일, 저장소 미포함) | 저장된 레이아웃 열기, `initData.content`, charts-storage 드로잉 DTO, pointset, 실시간 `du` 24회, 인증 JWT 클레임 이름 |
+| 로그인 세션 HAR 2 | (사용자 제공 ZIP, 저장소 미포함) | WebSocket 353개·HTTP 916개. RSI `translate` → `create_study` → `eval_pine_ex` → `modify_study` → `remove_study`/`study_deleted`, 드로잉 `PUT`, 레이아웃 `POST /api/v1/charts/save/` |
 
 ## 부록 B. 재현 절차
 
